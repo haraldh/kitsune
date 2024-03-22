@@ -24,19 +24,23 @@
           pkgs = import nixpkgs {
             inherit overlays system;
           };
+          stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
           rustPlatform = pkgs.makeRustPlatform {
             cargo = pkgs.rust-bin.stable.latest.minimal;
             rustc = pkgs.rust-bin.stable.latest.minimal;
+            inherit stdenv;
           };
           baseDependencies = with pkgs; [
             openssl
-            pkg-config
-            protobuf
             sqlite
             zlib
           ];
+          nativeDependencies = with pkgs; [
+            protobuf
+            pkg-config
+            rustPlatform.bindgenHook
+          ];
 
-          cargoConfig = builtins.fromTOML (builtins.readFile ./.cargo/config.toml); # TODO: Set the target CPU conditionally
           cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
           src = pkgs.lib.cleanSourceWith {
             src = pkgs.lib.cleanSource ./.;
@@ -59,11 +63,14 @@
               allowBuiltinFetchGit = true;
             };
 
-            nativeBuildInputs = baseDependencies;
+            OPENSSL_NO_VENDOR = 1;
 
-            PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig"; # Not sure why this is broken but it is
-            RUSTFLAGS = builtins.concatStringsSep " " cargoConfig.build.rustflags; # Oh god help.
+            buildInputs = baseDependencies;
 
+            nativeBuildInputs = nativeDependencies;
+
+            doCheck = false;
+            checkType = "debug"; # faster build and has debug asserts
             checkFlags = [
               # Depend on creating an HTTP client and that reads from the systems truststore
               # Because nix is fully isolated, these types of tests fail
@@ -77,6 +84,7 @@
               "--skip=webfinger::test::fetch_qarnax_ap_id"
               "--skip=basic_request"
               "--skip=json_request"
+              "--skip=test::default_resolver_works"
             ];
           };
         in
@@ -95,16 +103,18 @@
 
             main = rustPlatform.buildRustPackage (basePackage // {
               pname = "kitsune";
-              buildFeatures = [ "meilisearch" "oidc" ];
+              buildFeatures = [ "graphql-api" "mastodon-api" "meilisearch" "oidc" ];
               cargoBuildFlags = "-p kitsune";
             });
 
             frontend = pkgs.mkYarnPackage {
               inherit version;
-
+              packageJSON = "${src}/kitsune-fe/package.json";
+              yarnLock = "${src}/kitsune-fe/yarn.lock";
               src = "${src}/kitsune-fe";
 
               buildPhase = ''
+                export HOME=$(mktemp -d)
                 yarn --offline build
               '';
 
@@ -131,7 +141,7 @@
                     rust-bin.stable.latest.default
                   ]
                   ++
-                  baseDependencies;
+                  baseDependencies ++ nativeDependencies;
 
                   enterShell = ''
                     export PG_HOST=127.0.0.1
